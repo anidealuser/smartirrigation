@@ -1,0 +1,105 @@
+#define BLYNK_TEMPLATE_ID "********************" // replace it with your template id 
+#define BLYNK_TEMPLATE_NAME "********************" // Replace it your template name
+#define BLYNK_AUTH_TOKEN "*********************" // Replace it with your auth token
+
+#define BLYNK_PRINT Serial
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+
+// Pin setup
+#define SOIL_MOISTURE_PIN 34    // Analog pin for soil moisture sensor
+#define THRESHOLD_MOISTURE 60  // Moisture threshold percentage (0–100)
+#define PUMP_PIN 2             // D2 connected to relay IN pin
+#define PUMP_SWITCH V6         // Virtual pin on Blynk for manual control
+
+// 💧 CRITICAL CALIBRATION - ADJUST WET_VALUE BASED ON YOUR MEASUREMENT 💧
+#define DRY_VALUE 4095         // Raw reading for 0% moisture (sensor in dry air - uses max ADC value)
+#define WET_VALUE 1750         // ⚠️ CHANGE THIS: Raw reading for 100% moisture (sensor in water). 
+                               // Use the lowest raw value you recorded when fully submerged.
+
+// WiFi credentials
+char auth[] = BLYNK_AUTH_TOKEN; // leave it untouched
+char ssid[] = "*********";       // 🔹 your WiFi name ( the hotspot or home wifi)
+char pass[] = "**********";      // 🔹 your WiFi password
+
+BlynkTimer timer;
+bool isPumpOn = false;
+
+// Function to read & smooth soil moisture data
+int readSoilMoisture() {
+  int total = 0;
+  for (int i = 0; i < 10; i++) {
+    total += analogRead(SOIL_MOISTURE_PIN);
+    delay(10);
+  }
+  return total / 10;
+}
+
+// Function to send data and control pump
+void sendSensorData() {
+  int soilMoisture = readSoilMoisture();
+  
+  // 💥 CORRECTED MAPPING 💥
+  // Maps raw value from DRY (0%) to WET (100%)
+  int soilPercent = map(soilMoisture, DRY_VALUE, WET_VALUE, 0, 100); 
+  
+  // Clamp values to prevent display errors outside 0-100% range
+  if (soilPercent > 100) soilPercent = 100;
+  if (soilPercent < 0) soilPercent = 0;
+  
+  Serial.print("Soil Moisture (Raw: ");
+  Serial.print(soilMoisture);
+  Serial.print("): ");
+  Serial.print(soilPercent);
+  Serial.println("%");
+
+  Blynk.virtualWrite(V5, soilPercent); // Send to Blynk app gauge
+
+  // ACTIVE-LOW RELAY CONTROL (Correctly prioritizing manual control)
+  if (isPumpOn) { // Priority 1: Manual Control is Active (Pump must be ON)
+    digitalWrite(PUMP_PIN, LOW); // Relay ON
+
+  } else { 
+    // Priority 2: Automatic Mode (Only runs if manually OFF)
+    if (soilPercent < THRESHOLD_MOISTURE) {
+        // Automatic ON
+        digitalWrite(PUMP_PIN, LOW);  // Relay ON
+        Blynk.logEvent("moisture_alert", "Soil moisture below threshold!");
+        Serial.println("💧 Pump turned ON automatically (low moisture)");
+    } else {
+        // Automatic OFF
+        digitalWrite(PUMP_PIN, HIGH); // Relay OFF
+        Serial.println("🌿 Pump OFF (soil moist enough)");
+    }
+  }
+}
+
+// Manual control from Blynk app
+BLYNK_WRITE(PUMP_SWITCH)
+{
+  isPumpOn = param.asInt();
+  if (isPumpOn) {
+    digitalWrite(PUMP_PIN, LOW);  // Relay ON
+    Serial.println("✅ Pump manually turned ON (Blynk)");
+  } else {
+    digitalWrite(PUMP_PIN, HIGH); // Relay OFF
+    Serial.println("⛔ Pump manually turned OFF (Blynk)");
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(PUMP_PIN, OUTPUT);
+  digitalWrite(PUMP_PIN, HIGH); // Relay OFF initially (active LOW)
+
+  Blynk.begin(auth, ssid, pass);
+  timer.setInterval(3000L, sendSensorData); // Check every 3 seconds
+
+  Serial.println("🌱 Smart Irrigation System Starting...");
+}
+
+void loop() {
+  Blynk.run();
+  timer.run();
+}
+
